@@ -16,7 +16,12 @@
 
 package com.android.dx.ssa;
 
-import com.android.dx.rop.code.*;
+import com.android.dx.rop.code.Insn;
+import com.android.dx.rop.code.LocalItem;
+import com.android.dx.rop.code.RegOps;
+import com.android.dx.rop.code.RegisterSpec;
+import com.android.dx.rop.code.RegisterSpecList;
+import com.android.dx.rop.code.Rop;
 
 /**
  * A "normal" (non-phi) instruction in SSA form. Always wraps a rop insn.
@@ -105,6 +110,7 @@ public final class NormalSsaInsn extends SsaInsn implements Cloneable {
      *
      * @return {@code null-ok;} sources list
      */
+    @Override
     public RegisterSpecList getSources() {
         return insn.getSources();
     }
@@ -135,6 +141,7 @@ public final class NormalSsaInsn extends SsaInsn implements Cloneable {
     }
 
     /** {@inheritDoc} */
+    @Override
     public RegisterSpec getLocalAssignment() {
         RegisterSpec assignment;
 
@@ -158,15 +165,15 @@ public final class NormalSsaInsn extends SsaInsn implements Cloneable {
     }
 
     /**
-     * Upgrades this insn to a version that represents the constant last
-     * source literally. If the upgrade is not possible, this does nothing.
+     * Upgrades this insn to a version that represents the constant source
+     * literally. If the upgrade is not possible, this does nothing.
      *
-     * @see Insn#withLastSourceLiteral
+     * @see Insn#withSourceLiteral
      */
     public void upgradeToLiteral() {
         RegisterSpecList oldSources = insn.getSources();
 
-        insn = insn.withLastSourceLiteral();
+        insn = insn.withSourceLiteral();
         getBlock().getParent().onSourcesChanged(this, oldSources);
     }
 

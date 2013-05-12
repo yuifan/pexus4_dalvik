@@ -19,66 +19,52 @@
     .global dvmMterpStdRun
     .type   dvmMterpStdRun, %function
 /*
- * bool dvmMterpStdRun(MterpGlue* glue)
+ * bool dvmMterpStdRun(Thread* self)
  *
  * Interpreter entry point.  Returns changeInterp.
  *
  */
 dvmMterpStdRun:
-    push    %ebp
-    movl    %esp,%ebp
-    push    %edi
-    push    %esi
-    push    %ebx
+    push    %ebp                 # save caller base pointer
+    movl    %esp, %ebp           # set our %ebp
+    movl    rSELF, %ecx          # get incoming rSELF
+/*
+ * At this point we've allocated one slot on the stack
+ * via push and stack is 8-byte aligned.  Allocate space
+ * for 9 spill slots, 4 local slots, 5 arg slots to bring
+ * us to 16-byte alignment
+ */
+    subl    $$(FRAME_SIZE-4), %esp
 
-/* at this point, stack is misaligned by 1 word
-   We're allocating spill space for 6 words, plus
-   outgoing argument (5 words) and local variables
-   (4 words) - 15 words or 60 bytes total. See
-   diagram in header.S
-*/
-    subl   $$60,%esp
+/* Spill callee save regs */
+    movl    %edi,EDI_SPILL(%ebp)
+    movl    %esi,ESI_SPILL(%ebp)
+    movl    %ebx,EBX_SPILL(%ebp)
 
 /* Set up "named" registers */
-    movl    IN_ARG0(%ebp),%ecx
-    movl    %ecx,rGLUE_SPILL(%ebp)
-    LOAD_PC_FROM_GLUE(%ecx)
-    LOAD_FP_FROM_GLUE(%ecx)
-    movl    $$dvmAsmInstructionStart,rIBASE
+    movl    offThread_pc(%ecx),rPC
+    movl    offThread_curFrame(%ecx),rFP
+    movl    offThread_curHandlerTable(%ecx),rIBASE
 
-/* Remember %esp for future "longjmp" */
-    movl    %esp,offGlue_bailPtr(%ecx)
+    /* Remember %esp for future "longjmp" */
+    movl    %esp,offThread_bailPtr(%ecx)
 
-/* How to start? */
-    movb    offGlue_entryPoint(%ecx),%al
-
-/* Normal start? */
-    cmpb    $$kInterpEntryInstr,%al
-    jne     .Lnot_instr
+    /* Fetch next instruction before potential jump */
+    FETCH_INST
+#if defined(WITH_JIT)
+    GET_JIT_PROF_TABLE %ecx %eax
+    movl        $$0, offThread_inJitCodeCache(%ecx)
+    cmpl        $$0, %eax
+    jne         common_updateProfile # set up %ebx & %edx & rPC
+#endif
 
    /* Normal case: start executing the instruction at rPC */
-    FETCH_INST()
     GOTO_NEXT
-
-.Lnot_instr:
-    /* Reset to normal case */
-    movb   $$kInterpEntryInstr,offGlue_entryPoint(%ecx)
-    cmpb   $$kInterpEntryReturn,%al
-    je     common_returnFromMethod
-    cmpb   $$kInterpEntryThrow,%al
-    je     common_exceptionThrown
-    movzx  %al,%eax
-    movl   %eax,OUT_ARG1(%esp)
-    movl   $$.LstrBadEntryPoint,OUT_ARG0(%esp)
-    call   printf
-    call   dvmAbort
-    /* Not reached */
-
 
     .global dvmMterpStdBail
     .type   dvmMterpStdBail, %function
 /*
- * void dvmMterpStdBail(MterpGlue* glue, bool changeInterp)
+ * void dvmMterpStdBail(Thread* self, bool changeInterp)
  *
  * Restore the stack pointer and PC from the save point established on entry.
  * This is essentially the same as a longjmp, but should be cheaper.  The
@@ -88,20 +74,34 @@ dvmMterpStdRun:
  * look a little strange.
  *
  * On entry:
- *  esp+4 (arg0)  MterpGlue* glue
+ *  esp+4 (arg0)  Thread* self
  *  esp+8 (arg1)  bool changeInterp
  */
 dvmMterpStdBail:
-    movl    4(%esp),%ecx                 # grab glue
+    movl    4(%esp),%ecx                 # grab self
     movl    8(%esp),%eax                 # changeInterp to return reg
-    movl    offGlue_bailPtr(%ecx),%esp   # Stack back to normal
-    addl    $$60,%esp                    # Strip dvmMterpStdRun's frame
-    pop     %ebx
-    pop     %esi
-    pop     %edi
-    pop     %ebp
+    movl    offThread_bailPtr(%ecx),%esp # Restore "setjmp" esp
+    movl    %esp,%ebp
+    addl    $$(FRAME_SIZE-4), %ebp       # Restore %ebp at point of setjmp
+    movl    EDI_SPILL(%ebp),%edi
+    movl    ESI_SPILL(%ebp),%esi
+    movl    EBX_SPILL(%ebp),%ebx
+    movl    %ebp, %esp                   # strip frame
+    pop     %ebp                         # restore caller's ebp
     ret                                  # return to dvmMterpStdRun's caller
 
+
+#ifdef WITH_JIT
+    .global     dvmNcgInvokeInterpreter
+    .type       dvmNcgInvokeInterpreter, %function
+/* input: start of method in %eax */
+dvmNcgInvokeInterpreter:
+    movl        %eax, rPC
+    movl   rSELF, %ecx
+    movl   offThread_curHandlerTable(%ecx),rIBASE
+    FETCH_INST_R %ecx                    # %edx<- opcode
+    GOTO_NEXT_R %ecx                    # start executing the instruction at rPC
+#endif
 
 /*
  * Strings
@@ -109,3 +109,4 @@ dvmMterpStdBail:
     .section    .rodata
 .LstrBadEntryPoint:
     .asciz  "Bad entry point %d\n"
+

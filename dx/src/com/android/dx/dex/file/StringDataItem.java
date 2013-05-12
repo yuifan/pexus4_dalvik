@@ -16,25 +16,25 @@
 
 package com.android.dx.dex.file;
 
-import com.android.dx.rop.cst.CstUtf8;
+import com.android.dex.Leb128;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.util.AnnotatedOutput;
 import com.android.dx.util.ByteArray;
 import com.android.dx.util.Hex;
-import com.android.dx.util.Leb128Utils;
 
 /**
  * Representation of string data for a particular string, in a Dalvik file.
  */
 public final class StringDataItem extends OffsettedItem {
     /** {@code non-null;} the string value */
-    private final CstUtf8 value;
+    private final CstString value;
 
     /**
      * Constructs an instance.
      *
      * @param value {@code non-null;} the string value
      */
-    public StringDataItem(CstUtf8 value) {
+    public StringDataItem(CstString value) {
         super(1, writeSize(value));
 
         this.value = value;
@@ -46,11 +46,11 @@ public final class StringDataItem extends OffsettedItem {
      * @param value {@code non-null;} the string value
      * @return {@code >= 2}; the write size, in bytes
      */
-    private static int writeSize(CstUtf8 value) {
+    private static int writeSize(CstString value) {
         int utf16Size = value.getUtf16Size();
 
         // The +1 is for the '\0' termination byte.
-        return Leb128Utils.unsignedLeb128Size(utf16Size)
+        return Leb128.unsignedLeb128Size(utf16Size)
             + value.getUtf8Size() + 1;
     }
 
@@ -73,12 +73,12 @@ public final class StringDataItem extends OffsettedItem {
         int utf16Size = value.getUtf16Size();
 
         if (out.annotates()) {
-            out.annotate(Leb128Utils.unsignedLeb128Size(utf16Size),
+            out.annotate(Leb128.unsignedLeb128Size(utf16Size),
                     "utf16_size: " + Hex.u4(utf16Size));
             out.annotate(bytes.size() + 1, value.toQuoted());
         }
 
-        out.writeUnsignedLeb128(utf16Size);
+        out.writeUleb128(utf16Size);
         out.write(bytes);
         out.writeByte(0);
     }

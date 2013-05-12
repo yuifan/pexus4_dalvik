@@ -16,15 +16,14 @@
 
 package com.android.dx.dex.file;
 
+import com.android.dex.Leb128;
 import com.android.dx.dex.code.DalvCode;
 import com.android.dx.rop.code.AccessFlags;
 import com.android.dx.rop.cst.CstMethodRef;
-import com.android.dx.rop.cst.CstUtf8;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.type.TypeList;
 import com.android.dx.util.AnnotatedOutput;
 import com.android.dx.util.Hex;
-import com.android.dx.util.Leb128Utils;
-
 import java.io.PrintWriter;
 
 /**
@@ -131,7 +130,7 @@ public final class EncodedMethod extends EncodedMember
 
     /** {@inheritDoc} */
     @Override
-    public final CstUtf8 getName() {
+    public final CstString getName() {
         return method.getNat().getName();
     }
 
@@ -178,18 +177,18 @@ public final class EncodedMethod extends EncodedMember
         if (out.annotates()) {
             out.annotate(0, String.format("  [%x] %s", dumpSeq,
                             method.toHuman()));
-            out.annotate(Leb128Utils.unsignedLeb128Size(diff),
+            out.annotate(Leb128.unsignedLeb128Size(diff),
                     "    method_idx:   " + Hex.u4(methodIdx));
-            out.annotate(Leb128Utils.unsignedLeb128Size(accessFlags),
+            out.annotate(Leb128.unsignedLeb128Size(accessFlags),
                     "    access_flags: " +
                     AccessFlags.methodString(accessFlags));
-            out.annotate(Leb128Utils.unsignedLeb128Size(codeOff),
+            out.annotate(Leb128.unsignedLeb128Size(codeOff),
                     "    code_off:     " + Hex.u4(codeOff));
         }
 
-        out.writeUnsignedLeb128(diff);
-        out.writeUnsignedLeb128(accessFlags);
-        out.writeUnsignedLeb128(codeOff);
+        out.writeUleb128(diff);
+        out.writeUleb128(accessFlags);
+        out.writeUleb128(codeOff);
 
         return methodIdx;
     }

@@ -17,8 +17,8 @@
 /*
  * System utilities.
  */
-#ifndef _LIBDEX_SYSUTIL
-#define _LIBDEX_SYSUTIL
+#ifndef LIBDEX_SYSUTIL_H_
+#define LIBDEX_SYSUTIL_H_
 
 #include <sys/types.h>
 
@@ -31,42 +31,27 @@
  *
  * Must be a power of 2.
  */
+#ifdef PAGE_SHIFT
+#define SYSTEM_PAGE_SIZE        (1<<PAGE_SHIFT)
+#else
 #define SYSTEM_PAGE_SIZE        4096
+#endif
 
 /*
  * Use this to keep track of mapped segments.
  */
-typedef struct MemMapping {
+struct MemMapping {
     void*   addr;           /* start of data */
     size_t  length;         /* length of data */
 
     void*   baseAddr;       /* page-aligned base address */
     size_t  baseLength;     /* length of mapping */
-} MemMapping;
+};
 
 /*
  * Copy a map.
  */
 void sysCopyMap(MemMapping* dst, const MemMapping* src);
-
-/*
- * Load a file into a new shared memory segment.  All data from the current
- * offset to the end of the file is pulled in.
- *
- * The segment is read-write, allowing VM fixups.  (It should be modified
- * to support .gz/.zip compressed data.)
- *
- * On success, "pMap" is filled in, and zero is returned.
- */
-int sysLoadFileInShmem(int fd, MemMapping* pMap);
-
-/*
- * Map a file (from fd's current offset) into a shared,
- * read-only memory segment.
- *
- * On success, "pMap" is filled in, and zero is returned.
- */
-int sysMapFileInShmemReadOnly(int fd, MemMapping* pMap);
 
 /*
  * Map a file (from fd's current offset) into a shared, read-only memory
@@ -78,7 +63,9 @@ int sysMapFileInShmemReadOnly(int fd, MemMapping* pMap);
 int sysMapFileInShmemWritableReadOnly(int fd, MemMapping* pMap);
 
 /*
- * Like sysMapFileInShmemReadOnly, but on only part of a file.
+ * Map part of a file into a shared, read-only memory segment.
+ *
+ * On success, "pMap" is filled in, and zero is returned.
  */
 int sysMapFileSegmentInShmem(int fd, off_t start, size_t length,
     MemMapping* pMap);
@@ -113,4 +100,10 @@ void sysReleaseShmem(MemMapping* pMap);
  */
 int sysWriteFully(int fd, const void* buf, size_t count, const char* logMsg);
 
-#endif /*_DALVIK_SYSUTIL*/
+/*
+ * Copy the given number of bytes from one fd to another. Returns
+ * 0 on success, -1 on failure.
+ */
+int sysCopyFileToFile(int outFd, int inFd, size_t count);
+
+#endif  // LIBDEX_SYSUTIL_H_

@@ -16,7 +16,22 @@
 
 package com.android.dx.cf.code;
 
-import com.android.dx.rop.code.*;
+import com.android.dx.rop.code.AccessFlags;
+import com.android.dx.rop.code.BasicBlock;
+import com.android.dx.rop.code.BasicBlockList;
+import com.android.dx.rop.code.Insn;
+import com.android.dx.rop.code.InsnList;
+import com.android.dx.rop.code.PlainCstInsn;
+import com.android.dx.rop.code.PlainInsn;
+import com.android.dx.rop.code.RegisterSpec;
+import com.android.dx.rop.code.RegisterSpecList;
+import com.android.dx.rop.code.Rop;
+import com.android.dx.rop.code.RopMethod;
+import com.android.dx.rop.code.Rops;
+import com.android.dx.rop.code.SourcePosition;
+import com.android.dx.rop.code.ThrowingCstInsn;
+import com.android.dx.rop.code.ThrowingInsn;
+import com.android.dx.rop.code.TranslationAdvice;
 import com.android.dx.rop.cst.CstInteger;
 import com.android.dx.rop.cst.CstType;
 import com.android.dx.rop.type.Prototype;
@@ -26,7 +41,6 @@ import com.android.dx.rop.type.TypeList;
 import com.android.dx.util.Bits;
 import com.android.dx.util.Hex;
 import com.android.dx.util.IntList;
-
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
@@ -1427,7 +1441,7 @@ public final class Ropper {
                     IntList.makeImmutable (newSubStartLabel),
                             newSubStartLabel),
                 labelToSubroutines.get(b.getLabel()));
-       }
+        }
 
         /**
          * Copies a basic block, mapping its successors along the way.
@@ -1435,7 +1449,7 @@ public final class Ropper {
          * @param origLabel original block label
          * @param newLabel label that the new block should have
          */
-       private void copyBlock(int origLabel, int newLabel) {
+        private void copyBlock(int origLabel, int newLabel) {
 
             BasicBlock origBlock = labelToBlock(origLabel);
 
@@ -1515,7 +1529,7 @@ public final class Ropper {
          */
         private boolean involvedInSubroutine(int label, int subroutineStart) {
             IntList subroutinesList = labelToSubroutines.get(label);
-            return (subroutinesList.size() > 0
+            return (subroutinesList != null && subroutinesList.size() > 0
                     && subroutinesList.top() == subroutineStart);
         }
 

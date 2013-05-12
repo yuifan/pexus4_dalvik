@@ -18,7 +18,6 @@ package com.android.dx.rop.code;
 
 import com.android.dx.rop.type.TypeBearer;
 import com.android.dx.util.MutabilityControl;
-
 import java.util.HashMap;
 
 /**
@@ -115,7 +114,11 @@ public final class LocalVariableInfo
         }
 
         RegisterSpecSet newStart = start.mutableCopy();
-        newStart.intersect(specs, true);
+        if (start.size() != 0) {
+            newStart.intersect(specs, true);
+        } else {
+            newStart = specs.mutableCopy();
+        }
 
         if (start.equals(newStart)) {
             return false;

@@ -19,10 +19,8 @@ package com.android.dx.dex.file;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstNat;
 import com.android.dx.rop.cst.CstString;
-import com.android.dx.rop.cst.CstUtf8;
 import com.android.dx.util.AnnotatedOutput;
 import com.android.dx.util.Hex;
-
 import java.util.Collection;
 import java.util.TreeMap;
 
@@ -35,7 +33,7 @@ public final class StringIdsSection
      * {@code non-null;} map from string constants to {@link
      * StringIdItem} instances
      */
-    private final TreeMap<CstUtf8, StringIdItem> strings;
+    private final TreeMap<CstString, StringIdItem> strings;
 
     /**
      * Constructs an instance. The file offset is initially unknown.
@@ -45,7 +43,7 @@ public final class StringIdsSection
     public StringIdsSection(DexFile file) {
         super("string_ids", file, 4);
 
-        strings = new TreeMap<CstUtf8, StringIdItem>();
+        strings = new TreeMap<CstString, StringIdItem>();
     }
 
     /** {@inheritDoc} */
@@ -63,11 +61,7 @@ public final class StringIdsSection
 
         throwIfNotPrepared();
 
-        if (cst instanceof CstString) {
-            cst = ((CstString) cst).getString();
-        }
-
-        IndexedItem result = strings.get((CstUtf8) cst);
+        IndexedItem result = strings.get((CstString) cst);
 
         if (result == null) {
             throw new IllegalArgumentException("not found");
@@ -104,19 +98,7 @@ public final class StringIdsSection
      * @return {@code non-null;} the interned string
      */
     public StringIdItem intern(String string) {
-        CstUtf8 utf8 = new CstUtf8(string);
-        return intern(new StringIdItem(utf8));
-    }
-
-    /**
-     * Interns an element into this instance.
-     *
-     * @param string {@code non-null;} the string to intern, as a {@link CstString}
-     * @return {@code non-null;} the interned string
-     */
-    public StringIdItem intern(CstString string) {
-        CstUtf8 utf8 = string.getString();
-        return intern(new StringIdItem(utf8));
+        return intern(new StringIdItem(new CstString(string)));
     }
 
     /**
@@ -125,7 +107,7 @@ public final class StringIdsSection
      * @param string {@code non-null;} the string to intern, as a constant
      * @return {@code non-null;} the interned string
      */
-    public StringIdItem intern(CstUtf8 string) {
+    public StringIdItem intern(CstString string) {
         return intern(new StringIdItem(string));
     }
 
@@ -142,7 +124,7 @@ public final class StringIdsSection
 
         throwIfPrepared();
 
-        CstUtf8 value = string.getValue();
+        CstString value = string.getValue();
         StringIdItem already = strings.get(value);
 
         if (already != null) {
@@ -170,7 +152,7 @@ public final class StringIdsSection
      * @param string {@code non-null;} the string to look up
      * @return {@code >= 0;} the string's index
      */
-    public int indexOf(CstUtf8 string) {
+    public int indexOf(CstString string) {
         if (string == null) {
             throw new NullPointerException("string == null");
         }
@@ -184,17 +166,6 @@ public final class StringIdsSection
         }
 
         return s.getIndex();
-    }
-
-    /**
-     * Gets the index of the given string, which must have been added
-     * to this instance.
-     *
-     * @param string {@code non-null;} the string to look up
-     * @return {@code >= 0;} the string's index
-     */
-    public int indexOf(CstString string) {
-        return indexOf(string.getString());
     }
 
     /** {@inheritDoc} */

@@ -17,6 +17,8 @@
 /* common includes */
 #include "Dalvik.h"
 
+extern "C" {
+
 /*
  * Look up an interface on a class using the cache.
  *
@@ -29,9 +31,12 @@ INLINE Method* dvmFindInterfaceMethodInCache(ClassObject* thisClass,
 {
 #define ATOMIC_CACHE_CALC \
     dvmInterpFindInterfaceMethod(thisClass, methodIdx, method, methodClassDex)
+#define ATOMIC_CACHE_NULL_ALLOWED false
 
     return (Method*) ATOMIC_CACHE_LOOKUP(methodClassDex->pInterfaceCache,
                 DEX_INTERFACE_CACHE_SIZE, thisClass, methodIdx);
 
 #undef ATOMIC_CACHE_CALC
+}
+
 }

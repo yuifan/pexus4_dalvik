@@ -18,18 +18,15 @@
 LOCAL_PATH:= $(call my-dir)
 
 dexdump_src_files := \
-		DexList.c
+		DexList.cpp
 
 dexdump_c_includes := \
-		dalvik \
-		$(JNI_H_INCLUDE)
+		dalvik
 
 dexdump_shared_libraries :=
 
 dexdump_static_libraries := \
 		libdex
-
-ifneq ($(TARGET_SIMULATOR),true) # not 64 bit clean
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := dexlist
@@ -50,5 +47,3 @@ LOCAL_SHARED_LIBRARIES := $(dexdump_shared_libraries)
 LOCAL_STATIC_LIBRARIES := $(dexdump_static_libraries) libcutils
 LOCAL_LDLIBS += -lpthread -lz
 include $(BUILD_HOST_EXECUTABLE)
-
-endif # TARGET_SIMULATOR

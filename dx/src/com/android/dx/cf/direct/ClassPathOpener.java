@@ -16,18 +16,17 @@
 
 package com.android.dx.cf.direct;
 
-import com.android.dx.util.FileUtils;
-
+import com.android.dex.util.FileUtils;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.util.zip.ZipFile;
-import java.util.zip.ZipEntry;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Opens all the class files found in a class path element. Path elements
@@ -58,12 +57,13 @@ public class ClassPathOpener {
          * @param name {@code non-null;} filename of element. May not be a valid
          * filesystem path.
          *
+         * @param lastModified milliseconds since 1970-Jan-1 00:00:00 GMT
          * @param bytes {@code non-null;} file data
          * @return true on success. Result is or'd with all other results
          * from {@code processFileBytes} and returned to the caller
          * of {@code process()}.
          */
-        boolean processFileBytes(String name, byte[] bytes);
+        boolean processFileBytes(String name, long lastModified, byte[] bytes);
 
         /**
          * Informs consumer that an exception occurred while processing
@@ -131,7 +131,7 @@ public class ClassPathOpener {
             }
 
             byte[] bytes = FileUtils.readFile(file);
-            return consumer.processFileBytes(path, bytes);
+            return consumer.processFileBytes(path, file.lastModified(), bytes);
         } catch (Exception ex) {
             consumer.onException(ex);
             return false;
@@ -241,7 +241,7 @@ public class ClassPathOpener {
             in.close();
 
             byte[] bytes = baos.toByteArray();
-            any |= consumer.processFileBytes(path, bytes);
+            any |= consumer.processFileBytes(path, one.getTime(), bytes);
         }
 
         zip.close();

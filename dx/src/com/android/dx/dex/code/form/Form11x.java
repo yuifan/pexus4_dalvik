@@ -21,6 +21,7 @@ import com.android.dx.dex.code.InsnFormat;
 import com.android.dx.dex.code.SimpleInsn;
 import com.android.dx.rop.code.RegisterSpecList;
 import com.android.dx.util.AnnotatedOutput;
+import java.util.BitSet;
 
 /**
  * Instruction format {@code 11x}. See the instruction format spec
@@ -69,8 +70,12 @@ public final class Form11x extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return null;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(1);
+
+        bits.set(0, unsignedFitsInByte(regs.get(0).getReg()));
+        return bits;
     }
 
     /** {@inheritDoc} */

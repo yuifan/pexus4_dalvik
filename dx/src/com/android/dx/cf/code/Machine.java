@@ -16,10 +16,10 @@
 
 package com.android.dx.cf.code;
 
+import com.android.dx.rop.code.LocalItem;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.type.Prototype;
 import com.android.dx.rop.type.Type;
-import com.android.dx.rop.code.LocalItem;
 import java.util.ArrayList;
 
 /**
@@ -111,6 +111,14 @@ public interface Machine {
      * @param idx {@code >= 0;} the local variable index
      */
     public void localArg(Frame frame, int idx);
+
+    /**
+     * Used to specify if a loaded local variable has info in the local
+     * variable table.
+     *
+     * @param local {@code true} if local arg has info in local variable table
+     */
+    public void localInfo(boolean local);
 
     /**
      * Indicates that the salient type of this operation is as

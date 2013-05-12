@@ -17,50 +17,393 @@
  * Common subroutines and data.
  */
 
+#if defined(WITH_JIT)
 /*
- * Common code when a backwards branch is taken
- *
- * On entry:
- *   ebx (a.k.a. rINST_FULL) -> PC adjustment in 16-bit words
+ * JIT-related re-entries into the interpreter.  In general, if the
+ * exit from a translation can at some point be chained, the entry
+ * here requires that control arrived via a call, and that the "rp"
+ * on TOS is actually a pointer to a 32-bit cell containing the Dalvik PC
+ * of the next insn to handle.  If no chaining will happen, the entry
+ * should be reached via a direct jump and rPC set beforehand.
  */
-common_backwardBranch:
-    GET_GLUE(%ecx)
-    call   common_periodicChecks  # Note: expects rPC to be preserved
-    ADVANCE_PC_INDEXED(rINST_FULL)
-    FETCH_INST()
+
+    .global dvmJitToInterpPunt
+/*
+ * The compiler will generate a jump to this entry point when it is
+ * having difficulty translating a Dalvik instruction.  We must skip
+ * the code cache lookup & prevent chaining to avoid bouncing between
+ * the interpreter and code cache. rPC must be set on entry.
+ */
+dvmJitToInterpPunt:
+    GET_PC
+#if defined(WITH_JIT_TUNING)
+    movl   rPC, OUT_ARG0(%esp)
+    call   dvmBumpPunt
+#endif
+    movl   rSELF, %ecx
+    movl   offThread_curHandlerTable(%ecx),rIBASE
+    movl        $$0, offThread_inJitCodeCache(%ecx)
+    FETCH_INST_R %ecx
+    GOTO_NEXT_R %ecx
+
+    .global dvmJitToInterpSingleStep
+/*
+ * Return to the interpreter to handle a single instruction.
+ * Should be reached via a call.
+ * On entry:
+ *   0(%esp)          <= native return address within trace
+ *   rPC              <= Dalvik PC of this instruction
+ *   OUT_ARG0+4(%esp) <= Dalvik PC of next instruction
+ */
+dvmJitToInterpSingleStep:
+/* TODO */
+    call     dvmAbort
+#if 0
+    pop    %eax
+    movl   rSELF, %ecx
+    movl   OUT_ARG0(%esp), %edx
+    movl   %eax,offThread_jitResumeNPC(%ecx)
+    movl   %edx,offThread_jitResumeDPC(%ecx)
+    movl   $$kInterpEntryInstr,offThread_entryPoint(%ecx)
+    movl   $$1,rINST     # changeInterp <= true
+    jmp    common_gotoBail
+#endif
+
+    .global dvmJitToInterpNoChainNoProfile
+/*
+ * Return from the translation cache to the interpreter to do method
+ * invocation.  Check if the translation exists for the callee, but don't
+ * chain to it. rPC must be set on entry.
+ */
+dvmJitToInterpNoChainNoProfile:
+#if defined(WITH_JIT_TUNING)
+    SPILL_TMP1(%eax)
+    call   dvmBumpNoChain
+    UNSPILL_TMP1(%eax)
+#endif
+    movl   %eax, rPC
+    movl   rSELF, %eax
+    movl   rPC,OUT_ARG0(%esp)
+    movl   %eax,OUT_ARG1(%esp)
+    call   dvmJitGetTraceAddrThread  # (pc, self)
+    movl   rSELF,%ecx                # ecx <- self
+    movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
+    cmpl   $$0, %eax
+    jz     1f
+    jmp    *%eax                     # exec translation if we've got one
+    # won't return
+1:
+    EXPORT_PC
+    movl   rSELF, %ecx
+    movl   offThread_curHandlerTable(%ecx),rIBASE
+    FETCH_INST_R %ecx
+    GOTO_NEXT_R %ecx
+
+/*
+ * Return from the translation cache and immediately request a
+ * translation from the exit target, but don't attempt to chain.
+ * rPC set on entry.
+ */
+    .global dvmJitToInterpTraceSelectNoChain
+dvmJitToInterpTraceSelectNoChain:
+#if defined(WITH_JIT_TUNING)
+    movl   %edx, OUT_ARG0(%esp)
+    call   dvmBumpNoChain
+#endif
+    movl   %ebx, rPC
+    lea    4(%esp), %esp #to recover the esp update due to function call
+    movl   rSELF, %eax
+    movl   rPC,OUT_ARG0(%esp)
+    movl   %eax,OUT_ARG1(%esp)
+    call   dvmJitGetTraceAddrThread  # (pc, self)
+    movl   rSELF,%ecx
+    cmpl   $$0,%eax
+    movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
+    jz     1f
+    jmp    *%eax              # jump to tranlation
+    # won't return
+
+/* No Translation - request one */
+1:
+    GET_JIT_PROF_TABLE %ecx %eax
+    cmpl   $$0, %eax          # JIT enabled?
+    jnz    2f                 # Request one if so
+    movl   rSELF, %ecx
+    movl   offThread_curHandlerTable(%ecx),rIBASE
+    FETCH_INST_R %ecx         # Continue interpreting if not
+    GOTO_NEXT_R %ecx
+2:
+    ## Looks like an EXPORT_PC is needed here. Now jmp to common_selectTrace2
+    movl   $$kJitTSelectRequestHot,%eax # ask for trace select
+    jmp    common_selectTrace
+
+/*
+ * Return from the translation cache and immediately request a
+ * translation for the exit target.  Reached via a call, and
+ * (TOS)->rPC.
+ */
+    .global dvmJitToInterpTraceSelect
+dvmJitToInterpTraceSelect:
+    movl   0(%esp), %eax          # get return address
+    movl   %ebx, rPC              # get first argument (target rPC)
+
+    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
+    ## doesn't use the calling conventions of header.S
+    lea    4(%esp), %esp #to recover the esp update due to function call
+
+    ## An additional 5B instruction "jump 0" was added for a thread-safe
+    ## chaining cell update in JIT code cache. So the offset is now -17=-12-5.
+    lea    -17(%eax), %ebx #$$JIT_OFFSET_CHAIN_START(%eax), %ebx
+    lea    -4(%esp), %esp
+    movl   rSELF, %eax
+    movl   rPC,OUT_ARG0(%esp)
+    movl   %eax,OUT_ARG1(%esp)
+    call   dvmJitGetTraceAddrThread # (pc, self)
+    lea    4(%esp), %esp
+    cmpl   $$0,%eax
+    movl   rSELF, %ecx
+    movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
+    jz     1b                 # no - ask for one
+    movl   %eax,OUT_ARG0(%esp)
+    movl   rINST,OUT_ARG1(%esp)
+    call   dvmJitChain        # Attempt dvmJitChain(codeAddr,chainAddr)
+    cmpl   $$0,%eax           # Success?
+    jz     toInterpreter      # didn't chain - interpret
+    jmp    *%eax
+    # won't return
+
+/*
+ * Placeholder entries for x86 JIT
+ */
+    .global dvmJitToInterpBackwardBranch
+dvmJitToInterpBackwardBranch:
+
+    .global     dvmJitToExceptionThrown
+dvmJitToExceptionThrown: //rPC in
+    movl   rSELF, %edx
+    GET_PC
+    movl   $$0, offThread_inJitCodeCache(%edx)
+    jmp common_exceptionThrown
+
+    .global dvmJitToInterpNormal
+dvmJitToInterpNormal:
+/* one input: the target rPC value */
+    movl        0(%esp), %eax          # get return address
+    movl        %ebx, rPC              # get first argument (target rPC)
+
+    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
+    ## doesn't use the calling conventions of header.S
+
+    ## An additional 5B instruction "jump 0" was added for a thread-safe
+    ## chaining cell update in JIT code cache. So the offset is now -17=-12-5.
+    lea         -17(%eax), %ebx #$$JIT_OFFSET_CHAIN_START(%eax), %ebx
+    lea         4(%esp), %esp
+    movl        rPC, OUT_ARG0(%esp)
+    movl        rSELF, %ecx
+    movl        %ecx, OUT_ARG1(%esp)
+    call        dvmJitGetTraceAddrThread
+    ## Here is the change from using rGLUE to rSELF for accessing the
+    ## JIT code cache flag
+    movl        rSELF, %ecx
+    movl        %eax, offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
+    #lea         4(%esp), %esp
+    cmp         $$0, %eax
+    je          toInterpreter
+    #lea         -8(%esp), %esp
+    movl        %ebx, OUT_ARG1(%esp)    # %ebx live thorugh dvmJitGetTraceAddrThread
+    movl        %eax, OUT_ARG0(%esp)    # first argument
+    call        dvmJitChain
+    #lea         8(%esp), %esp
+    cmp         $$0, %eax
+    je          toInterpreter
+    jmp         *%eax                   #to native address
+
+    .global dvmJitToInterpNoChain
+dvmJitToInterpNoChain:
+dvmJitToInterpNoChain: #rPC in eax
+#if defined(WITH_JIT_TUNING)
+    SPILL_TMP1(%eax)
+    call   dvmBumpNoChain
+    UNSPILL_TMP1(%eax)
+#endif
+    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
+    ## doesn't use the calling conventions of header.S
+    movl        %eax, rPC
+    movl        rPC, OUT_ARG0(%esp)
+    movl        rSELF, %ecx
+    movl        %ecx, OUT_ARG1(%esp)
+    call        dvmJitGetTraceAddrThread
+    ## Here is the change from using rGLUE to rSELF for accessing the
+    ## JIT code cache flag
+    movl        rSELF, %ecx
+    movl        %eax, offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
+    cmp         $$0, %eax
+    je          toInterpreter
+    jmp         *%eax                   #to native address
+
+toInterpreter:
+    EXPORT_PC
+    movl        rSELF, %ecx
+    movl        offThread_curHandlerTable(%ecx), rIBASE
+    FETCH_INST
+    movl        offThread_pJitProfTable(%ecx), %eax
+    #Fallthrough
+
+/* ebx holds the pointer to the jit profile table
+   edx has the opCode */
+common_testUpdateProfile:
+    cmp         $$0, %eax
+    je          4f
+/* eax holds the pointer to the jit profile table
+   edx has the opCode
+   rPC points to the next bytecode */
+
+common_updateProfile:
+    # quick & dirty hash
+    movl   rPC, %ecx
+    shrl   $$12, %ecx
+    xorl   rPC, %ecx
+    andl   $$((1<<JIT_PROF_SIZE_LOG_2)-1), %ecx
+    decb   (%ecx,%eax)
+    #jmp    1f # remove
+    jz     2f
+1:
     GOTO_NEXT
+2:
+common_Profile:
+/*
+ * Here, we switch to the debug interpreter to request
+ * trace selection.  First, though, check to see if there
+ * is already a native translation in place (and, if so,
+ * jump to it now.
+ */
+    SPILL(rIBASE)
+    SPILL_TMP1(rINST)
+    movl        rSELF, rIBASE
+    GET_JIT_THRESHOLD rIBASE rINST  # leaves rSELF in %ecx
+    EXPORT_PC
+    movb   rINSTbl,(%ecx,%eax)   # reset counter
+    movl   rIBASE,rINST            # preserve rSELF
+    movl   rSELF, %eax
+    movl   rPC,OUT_ARG0(%esp)
+    movl   rIBASE,OUT_ARG1(%esp)
+    call   dvmJitGetTraceAddrThread  # (pc, self)
+    UNSPILL(rIBASE)
+    movl   %eax,offThread_inJitCodeCache(rINST)   # set the inJitCodeCache flag
+    UNSPILL_TMP1(rINST)
+    cmpl   $$0,%eax
+    #jmp    1f # remove
+    jz     1f
+    jmp   *%eax        # TODO: decide call vs/ jmp!.  No return either way
+1:
+    movl   $$kJitTSelectRequest,%eax
+    # On entry, eax<- jitState, rPC valid
+common_selectTrace:
+    mov         %ebx, EBX_SPILL(%ebp)
+    movl        rSELF, %ebx
+    movzwl      offThread_subMode(%ebx), %ecx
+    and         $$(kSubModeJitTraceBuild | kSubModeJitSV), %ecx
+    jne         3f                     # already doing JIT work, continue
+    movl        %eax, offThread_jitState(%ebx)
+    movl        rSELF, %eax
+    movl       %eax, OUT_ARG0(%esp)
+
+/*
+ * Call out to validate trace-building request. If successful, rIBASE will be swapped
+ * to send us into single-steppign trace building mode, so we need to refresh before
+ * we continue.
+ */
+
+   EXPORT_PC
+   SAVE_PC_FP_TO_SELF %ecx
+   call dvmJitCheckTraceRequest
+3:
+   mov          EBX_SPILL(%ebp), %ebx
+   FETCH_INST
+   movl rSELF, %ecx
+   movl offThread_curHandlerTable(%ecx), rIBASE
+4:
+   GOTO_NEXT
+
+common_selectTrace2:
+    mov         %ebx, EBX_SPILL(%ebp)
+    movl        rSELF, %ebx
+    movl        %ebx, OUT_ARG0(%esp)
+    movl        %eax, offThread_jitState(%ebx)
+    movzwl      offThread_subMode(%ebx), %ecx
+    mov         EBX_SPILL(%ebp), %ebx
+    and         (kSubModeJitTraceBuild | kSubModeJitSV), %ecx
+    jne         3f                     # already doing JIT work, continue
 
 
+
+/*
+ * Call out to validate trace-building request. If successful, rIBASE will be swapped
+ * to send us into single-steppign trace building mode, so we need to refresh before
+ * we continue.
+ */
+
+   EXPORT_PC
+   SAVE_PC_FP_TO_SELF %ecx
+   call dvmJitCheckTraceRequest
+3:
+   FETCH_INST
+   movl rSELF, %ecx
+   movl offThread_curHandlerTable(%ecx), rIBASE
+4:
+   GOTO_NEXT
+
+#endif
+
+/*
+ * For the invoke codes we need to know what register holds the "this" pointer. However
+ * it seems the this pointer is assigned consistently most times it is in %ecx but other
+ * times it is in OP_INVOKE_INTERFACE, OP_INVOKE_SUPER_QUICK, or OP_INVOKE_VIRTUAL_QUICK.
+*/
 
 /*
  * Common code for method invocation with range.
  *
  * On entry:
  *   eax = Method* methodToCall
- *   rINST trashed, must reload
+ *   ecx = "this"
+ *   rINSTw trashed, must reload
+ *   rIBASE trashed, must reload before resuming interpreter
  */
 
 common_invokeMethodRange:
 .LinvokeNewRange:
-
+#if defined(WITH_JIT)
+    SPILL_TMP1(%edx)
+    SPILL_TMP2(%ebx)
+    movl        rSELF, %edx
+    movzwl      offThread_subMode(%edx), %ebx
+    and         $$kSubModeJitTraceBuild, %ebx
+    jz          6f
+    call        save_callsiteinfo
+6:
+    UNSPILL_TMP2(%ebx)
+    UNSPILL_TMP1(%edx)
+#endif
    /*
     * prepare to copy args to "outs" area of current frame
     */
 
-    movzbl      1(rPC),rINST_FULL       # rINST_FULL<- AA
+    movzbl      1(rPC),rINST       # rINST<- AA
     movzwl      4(rPC), %ecx            # %ecx<- CCCC
-    SPILL(rPC)
-    SAVEAREA_FROM_FP(%edx,rFP)          # %edx<- &StackSaveArea
-    test        rINST_FULL, rINST_FULL
-    movl        rINST_FULL, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- AA
+    SAVEAREA_FROM_FP %edx               # %edx<- &StackSaveArea
+    test        rINST, rINST
+    movl        rINST, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- AA
     jz          .LinvokeArgsDone        # no args; jump to args done
 
 
    /*
-    * %eax=methodToCall, %ecx=CCCC, LOCAL0_OFFSET(%ebp)=count, %edx=&outs (&stackSaveArea)
-    * (very few methods have > 10 args; could unroll for common cases)
+    * %eax=methodToCall, %ecx=CCCC, LOCAL0_OFFSET(%ebp)=count,
+    * %edx=&outs (&stackSaveArea).  (very few methods have > 10 args;
+    * could unroll for common cases)
     */
 
+.LinvokeRangeArgs:
     movl        %ebx, LOCAL1_OFFSET(%ebp)       # LOCAL1_OFFSET(%ebp)<- save %ebx
     lea         (rFP, %ecx, 4), %ecx    # %ecx<- &vCCCC
     shll        $$2, LOCAL0_OFFSET(%ebp)        # LOCAL0_OFFSET(%ebp)<- offset
@@ -79,17 +422,29 @@ common_invokeMethodRange:
    /*
     * %eax is "Method* methodToCall", the method we're trying to call
     * prepare to copy args to "outs" area of current frame
+    * rIBASE trashed, must reload before resuming interpreter
     */
 
 common_invokeMethodNoRange:
+#if defined(WITH_JIT)
+    SPILL_TMP1(%edx)
+    SPILL_TMP2(%ebx)
+    movl        rSELF, %edx
+    movzwl      offThread_subMode(%edx), %ebx
+    and         $$kSubModeJitTraceBuild, %ebx
+    jz          6f
+    call        save_callsiteinfo
+6:
+    UNSPILL_TMP2(%ebx)
+    UNSPILL_TMP1(%edx)
+#endif
 .LinvokeNewNoRange:
-    movzbl      1(rPC),rINST_FULL       # rINST_FULL<- BA
-    SPILL(rPC)
-    movl        rINST_FULL, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- BA
+    movzbl      1(rPC),rINST       # rINST<- BA
+    movl        rINST, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- BA
     shrl        $$4, LOCAL0_OFFSET(%ebp)        # LOCAL0_OFFSET(%ebp)<- B
     je          .LinvokeArgsDone        # no args; jump to args done
     movzwl      4(rPC), %ecx            # %ecx<- GFED
-    SAVEAREA_FROM_FP(%edx,rFP)          # %edx<- &StackSaveArea
+    SAVEAREA_FROM_FP %edx               # %edx<- &StackSaveArea
 
    /*
     * %eax=methodToCall, %ecx=GFED, LOCAL0_OFFSET(%ebp)=count, %edx=outs
@@ -104,9 +459,9 @@ common_invokeMethodNoRange:
     jl          3f                      # handle 3 args
     je          4f                      # handle 4 args
 5:
-    andl        $$15, rINST_FULL        # rINST<- A
+    andl        $$15, rINST             # rINSTw<- A
     lea         -4(%edx), %edx          # %edx<- update &outs; &outs--
-    movl        (rFP, rINST_FULL, 4), %ecx # %ecx<- vA
+    movl        (rFP, rINST, 4), %ecx   # %ecx<- vA
     movl        %ecx, (%edx)            # *outs<- vA
     movl        LOCAL1_OFFSET(%ebp), %ecx       # %ecx<- GFED
 4:
@@ -145,17 +500,17 @@ common_invokeMethodNoRange:
     movzwl      offMethod_outsSize(%eax), %ecx # %ecx<- methodToCall->outsSize
     movl        %eax, LOCAL0_OFFSET(%ebp)       # LOCAL0_OFFSET<- methodToCall
     shl         $$2, %edx               # %edx<- update offset
-    SAVEAREA_FROM_FP(%eax,rFP)          # %eax<- &StackSaveArea
+    SAVEAREA_FROM_FP %eax               # %eax<- &StackSaveArea
     subl        %edx, %eax              # %eax<- newFP; (old savearea - regsSize)
-    GET_GLUE(%edx)                      # %edx<- pMterpGlue
+    movl        rSELF,%edx              # %edx<- pthread
     movl        %eax, LOCAL1_OFFSET(%ebp)       # LOCAL1_OFFSET(%ebp)<- &outs
     subl        $$sizeofStackSaveArea, %eax # %eax<- newSaveArea (stack save area using newFP)
-    movl        offGlue_interpStackEnd(%edx), %edx # %edx<- glue->interpStackEnd
-    movl        %edx, LOCAL2_OFFSET(%ebp)       # LOCAL2_OFFSET<- glue->interpStackEnd
+    movl        offThread_interpStackEnd(%edx), %edx # %edx<- self->interpStackEnd
+    movl        %edx, TMP_SPILL1(%ebp)  # spill self->interpStackEnd
     shl         $$2, %ecx               # %ecx<- update offset for outsSize
     movl        %eax, %edx              # %edx<- newSaveArea
     sub         %ecx, %eax              # %eax<- bottom; (newSaveArea - outsSize)
-    cmp         LOCAL2_OFFSET(%ebp), %eax       # compare interpStackEnd and bottom
+    cmp         TMP_SPILL1(%ebp), %eax  # compare interpStackEnd and bottom
     movl        LOCAL0_OFFSET(%ebp), %eax       # %eax<- restore methodToCall
     jl          .LstackOverflow         # handle frame overflow
 
@@ -164,282 +519,325 @@ common_invokeMethodNoRange:
     */
 
 #ifdef EASY_GDB
-    SAVEAREA_FROM_FP(%ecx,rFP)          # %ecx<- &StackSaveArea
+    SAVEAREA_FROM_FP %ecx               # %ecx<- &StackSaveArea
     movl        %ecx, offStackSaveArea_prevSave(%edx) # newSaveArea->prevSave<- &outs
 #endif
+    movl        rSELF,%ecx              # %ecx<- pthread
     movl        rFP, offStackSaveArea_prevFrame(%edx) # newSaveArea->prevFrame<- rFP
-    movl        rPC_SPILL(%ebp), %ecx
-    movl        %ecx, offStackSaveArea_savedPc(%edx) # newSaveArea->savedPc<- rPC
+    movl        rPC, offStackSaveArea_savedPc(%edx) # newSaveArea->savedPc<- rPC
+#if defined(WITH_JIT)
+    movl        $$0, offStackSaveArea_returnAddr(%edx)
+#endif
+
+    /* Any special actions to take? */
+    cmpw        $$0, offThread_subMode(%ecx)
+    jne         2f                     # Yes - handle them
+1:
     testl       $$ACC_NATIVE, offMethod_accessFlags(%eax) # check for native call
     movl        %eax, offStackSaveArea_method(%edx) # newSaveArea->method<- method to call
     jne         .LinvokeNative          # handle native call
 
    /*
-    * Update "glue" values for the new method
+    * Update "self" values for the new method
     * %eax=methodToCall, LOCAL1_OFFSET(%ebp)=newFp
     */
-
     movl        offMethod_clazz(%eax), %edx # %edx<- method->clazz
-    GET_GLUE(%ecx)                      # %ecx<- pMterpGlue
     movl        offClassObject_pDvmDex(%edx), %edx # %edx<- method->clazz->pDvmDex
-    movl        %eax, offGlue_method(%ecx) # glue->method<- methodToCall
-    movl        %edx, offGlue_methodClassDex(%ecx) # glue->methodClassDex<- method->clazz->pDvmDex
+    movl        %eax, offThread_method(%ecx) # self->method<- methodToCall
+    movl        %edx, offThread_methodClassDex(%ecx) # self->methodClassDex<- method->clazz->pDvmDex
     movl        offMethod_insns(%eax), rPC # rPC<- methodToCall->insns
-    movl        offGlue_self(%ecx), %eax # %eax<- glue->self
+    movl        $$1, offThread_debugIsMethodEntry(%ecx)
     movl        LOCAL1_OFFSET(%ebp), rFP # rFP<- newFP
-    movl        rFP, offThread_curFrame(%eax) # glue->self->curFrame<- newFP
-    FETCH_INST()
+    movl        rFP, offThread_curFrame(%ecx) # curFrame<-newFP
+    movl        offThread_curHandlerTable(%ecx),rIBASE
+    FETCH_INST
+#if defined(WITH_JIT)
+    /* rPC is already updated */
+    GET_JIT_PROF_TABLE %ecx %eax
+    cmp         $$0, %eax
+    jne         common_updateProfile # set up %ebx & %edx & rPC
+#endif
     GOTO_NEXT                           # jump to methodToCall->insns
+
+2:
+    /*
+     * On entry, preserve all:
+     *  %eax: method
+     *  %ecx: self
+     *  %edx: new save area
+     */
+    SPILL_TMP1(%eax)                   # preserve methodToCall
+    SPILL_TMP2(%edx)                   # preserve newSaveArea
+    movl        rPC, offThread_pc(%ecx) # update interpSave.pc
+    movl        %ecx, OUT_ARG0(%esp)
+    movl        %eax, OUT_ARG1(%esp)
+    call        dvmReportInvoke        # (self, method)
+    UNSPILL_TMP1(%eax)
+    UNSPILL_TMP2(%edx)
+    movl        rSELF,%ecx             # restore rSELF
+    jmp         1b
 
    /*
     * Prep for the native call
-    * %eax=methodToCall, LOCAL1_OFFSET(%ebp)=newFP, %edx=newSaveArea
+    * %eax=methodToCall, LOCAL1_OFFSET(%ebp)=newFP, %edx=newSaveArea, %ecx=self
     */
 
 .LinvokeNative:
-    GET_GLUE(%ecx)                      # %ecx<- pMterpGlue
-    movl        %eax, OUT_ARG1(%esp)    # push parameter methodToCall
-    movl        offGlue_self(%ecx), %ecx        # %ecx<- glue->self
-    movl        offThread_jniLocal_topCookie(%ecx), %eax # %eax<- self->localRef->...
-    movl        %eax, offStackSaveArea_localRefCookie(%edx) # newSaveArea->localRefCookie<- top
-    movl        %edx, OUT_ARG4(%esp)    # save newSaveArea
-    movl        LOCAL1_OFFSET(%ebp), %edx # %edx<- newFP
-    movl        %edx, offThread_curFrame(%ecx)  # glue->self->curFrame<- newFP
-    movl        %ecx, OUT_ARG3(%esp)    # save glue->self
-    movl        %ecx, OUT_ARG2(%esp)    # push parameter glue->self
-    GET_GLUE(%ecx)                      # %ecx<- pMterpGlue
-    movl        OUT_ARG1(%esp), %eax    # %eax<- methodToCall
-    lea         offGlue_retval(%ecx), %ecx # %ecx<- &retval
-    movl        %ecx, OUT_ARG0(%esp)    # push parameter pMterpGlue
-    push        %edx                    # push parameter newFP
-
+    movl        offThread_jniLocal_topCookie(%ecx), rINST # rINST<- self->localRef->...
+    movl        rINST, offStackSaveArea_localRefCookie(%edx) # newSaveArea->localRefCookie<- top
+    movl        %edx, LOCAL2_OFFSET(%ebp)  # save newSaveArea
+    movl        LOCAL1_OFFSET(%ebp), rINST # rINST<- newFP
+    movl        rINST, offThread_curFrame(%ecx)  # curFrame<- newFP
+    cmpw        $$0, offThread_subMode(%ecx)  # Anything special going on?
+    jne         11f                     # yes - handle it
+    movl        %ecx, OUT_ARG3(%esp)    # push parameter self
+    movl        %eax, OUT_ARG2(%esp)    # push parameter methodToCall
+    lea         offThread_retval(%ecx), %ecx # %ecx<- &retval
+    movl        %ecx, OUT_ARG1(%esp)    # push parameter &retval
+    movl        rINST, OUT_ARG0(%esp)    # push parameter newFP
     call        *offMethod_nativeFunc(%eax) # call methodToCall->nativeFunc
-    lea         4(%esp), %esp
-    movl        OUT_ARG4(%esp), %ecx    # %ecx<- newSaveArea
-    movl        OUT_ARG3(%esp), %eax    # %eax<- glue->self
+7:
+    movl        LOCAL2_OFFSET(%ebp), %ecx    # %ecx<- newSaveArea
+    movl        rSELF, %eax             # %eax<- self
     movl        offStackSaveArea_localRefCookie(%ecx), %edx # %edx<- old top
     cmp         $$0, offThread_exception(%eax) # check for exception
-    movl        rFP, offThread_curFrame(%eax) # glue->self->curFrame<- rFP
+    movl        rFP, offThread_curFrame(%eax) # curFrame<- rFP
     movl        %edx, offThread_jniLocal_topCookie(%eax) # new top <- old top
-    UNSPILL(rPC)
     jne         common_exceptionThrown  # handle exception
-    FETCH_INST_WORD(3)
-    ADVANCE_PC(3)
-    GOTO_NEXT                           # jump to next instruction
+    movl        offThread_curHandlerTable(%eax),rIBASE
+    FETCH_INST_OPCODE 3 %ecx
+    ADVANCE_PC 3
+    GOTO_NEXT_R %ecx                    # jump to next instruction
+
+11:
+    /*
+     * Handle any special subMode actions
+     * %eax=methodToCall, rINST=newFP, %ecx=self
+     */
+    SPILL_TMP1(%eax)                    # save methodTocall
+    movl        rPC, offThread_pc(%ecx)
+    movl        %ecx, OUT_ARG1(%esp)
+    movl        %eax, OUT_ARG0(%esp)
+    movl        rFP, OUT_ARG2(%esp)
+    call        dvmReportPreNativeInvoke # (methodToCall, self, fp)
+    UNSPILL_TMP1(%eax)                  # restore methodToCall
+    movl        rSELF,%ecx              # restore self
+
+    /* Do the native call */
+    movl        %ecx, OUT_ARG3(%esp)    # push parameter self
+    lea         offThread_retval(%ecx), %ecx # %ecx<- &retval
+    movl        %eax, OUT_ARG2(%esp)    # push parameter methodToCall
+    movl        %ecx, OUT_ARG1(%esp)    # push parameter &retval
+    movl        rINST, OUT_ARG0(%esp)   # push parameter newFP
+    call        *offMethod_nativeFunc(%eax) # call methodToCall->nativeFunc
+
+    UNSPILL_TMP1(%eax)                  # restore methodToCall
+    movl        rSELF, %ecx
+    movl        %ecx, OUT_ARG1(%esp)
+    movl        %eax, OUT_ARG0(%esp)
+    movl        rFP, OUT_ARG2(%esp)
+    call        dvmReportPostNativeInvoke # (methodToCall, self, fp)
+    jmp         7b                      # rejoin
 
 .LstackOverflow:    # eax=methodToCall
     movl        %eax, OUT_ARG1(%esp)    # push parameter methodToCall
-    GET_GLUE(%eax)                      # %eax<- pMterpGlue
-    movl        offGlue_self(%eax), %eax # %eax<- glue->self
+    movl        rSELF,%eax              # %eax<- self
     movl        %eax, OUT_ARG0(%esp)    # push parameter self
     call        dvmHandleStackOverflow  # call: (Thread* self, Method* meth)
-    UNSPILL(rPC)                        # return: void
     jmp         common_exceptionThrown  # handle exception
-
-
-/*
- * Common invoke code (old-style).
- * TUNING:  Rewrite along lines of new armv5 code?
- *
- * On entry:
- *   eax = Method* methodToCall
- *   ecx = bool methodCallRange
- *   rINST trashed, must reload
- */
-common_invokeOld:
-    movl     %ecx,OUT_ARG1(%esp)     # arg1<- methodCallRange
-    GET_GLUE(%ecx)
-    movzwl  (rPC),rINST_FULL         # recover rINST
-    movl     %eax,OUT_ARG2(%esp)     # arg2<- method
-    movzwl   4(rPC),%eax             # eax<- GFED or CCCC
-    SAVE_PC_TO_GLUE(%ecx)
-    SAVE_FP_TO_GLUE(%ecx)
-    movzbl   rINST_HI,rINST_FULL
-    movl     rINST_FULL,OUT_ARG3(%esp)# arg3<- AA
-    movl     %ecx,OUT_ARG0(%esp)     # arg0<- GLUE
-    movl     %eax,OUT_ARG4(%esp)     # arg4<- GFED/CCCC
-    call     dvmMterp_invokeMethod
-    jmp      common_resumeAfterGlueCall
-
-
-/*
- * Do we need the thread to be suspended or have debugger/profiling activity?
- *
- * On entry:
- *   ebx  -> PC adjustment in 16-bit words (must be preserved)
- *   ecx  -> GLUE pointer
- *   reentry type, e.g. kInterpEntryInstr stored in rGLUE->entryPoint
- *
- * Note: A call will normally kill %eax, rPC/%edx and %ecx.  To
- *       streamline the normal case, this routine will preserve rPC and
- *       %ecx in addition to the normal caller save regs.  The save/restore
- *       is a bit ugly, but will happen in the relatively uncommon path.
- * TODO: Basic-block style Jit will need a hook here as well.  Fold it into
- *       the suspendCount check so we can get both in 1 shot.
- */
-common_periodicChecks:
-    movl    offGlue_pSelfSuspendCount(%ecx),%eax    # eax <- &suspendCount
-    cmpl    $$0,(%eax)
-    jne     1f
-
-6:
-    movl   offGlue_pDebuggerActive(%ecx),%eax      # eax <- &DebuggerActive
-    movl   offGlue_pActiveProfilers(%ecx),%ecx     # ecx <- &ActiveProfilers
-    testl  %eax,%eax               # debugger enabled?
-    je     2f
-    movzbl (%eax),%eax             # get active count
-2:
-    orl    (%ecx),%eax             # eax <- debuggerActive | activeProfilers
-    GET_GLUE(%ecx)                 # restore rGLUE
-    jne    3f                      # one or both active - switch interp
-
-5:
-    ret
-
-    /* Check for suspend */
-1:
-    /*  At this point, the return pointer to the caller of
-     *  common_periodicChecks is on the top of stack.  We need to preserve
-     *  rPC(edx) and GLUE(ecx).  We'll spill rPC, and reload GLUE.
-     *  The outgoing profile is:
-     *      bool dvmCheckSuspendPending(Thread* self)
-     *  Because we reached here via a call, go ahead and build a new frame.
-     */
-    EXPORT_PC()                         # need for precise GC
-    movl    offGlue_self(%ecx),%eax      # eax<- glue->self
-    SPILL(rPC)                      # save edx
-    push    %ebp
-    movl    %esp,%ebp
-    subl    $$24,%esp
-    movl    %eax,OUT_ARG0(%esp)
-    call    dvmCheckSuspendPending
-    addl    $$24,%esp
-    pop     %ebp
-    UNSPILL(rPC)
-    GET_GLUE(%ecx)
-
-    /*
-     * Need to check to see if debugger or profiler flags got set
-     * while we were suspended.
-     */
-    jmp    6b
-
-    /* Switch interpreters */
-    /* Note: %ebx contains the 16-bit word offset to be applied to rPC to
-     * "complete" the interpretation of backwards branches.  In effect, we
-     * are completing the interpretation of the branch instruction here,
-     * and the new interpreter will resume interpretation at the branch
-     * target. However, a switch request recognized during the handling
-     * of a return from method instruction results in an immediate abort,
-     * and the new interpreter will resume by re-interpreting the return
-     * instruction.
-     */
-3:
-    leal    (rPC,%ebx,2),rPC       # adjust pc to show target
-    GET_GLUE(%ecx)                 # bail expect GLUE already loaded
-    movl    $$1,rINST_FULL         # set changeInterp to true
-    jmp     common_gotoBail
 
 
 /*
  * Common code for handling a return instruction
  */
 common_returnFromMethod:
-    GET_GLUE(%ecx)
-    /* Set entry mode in case we bail */
-    movb    $$kInterpEntryReturn,offGlue_entryPoint(%ecx)
-    xorl    rINST_FULL,rINST_FULL   # zero offset in case we switch interps
-    call    common_periodicChecks   # Note: expects %ecx to be preserved
+    movl    rSELF, %ecx
+    SAVEAREA_FROM_FP %eax                       # %eax<- saveArea(old)
+    cmpw    $$0, offThread_subMode(%ecx)          # special action needed?
+    jne     19f                                   # go if so
+14:
 
-    SAVEAREA_FROM_FP(%eax,rFP)                    # eax<- saveArea (old)
-    movl    offStackSaveArea_prevFrame(%eax),rFP  # rFP<- prevFrame
-    movl    (offStackSaveArea_method-sizeofStackSaveArea)(rFP),rINST_FULL
-    cmpl    $$0,rINST_FULL                        # break?
-    je      common_gotoBail    # break frame, bail out completely
+    movl        offStackSaveArea_prevFrame(%eax), rFP # rFP<- saveArea->PrevFrame
+    movl        (offStackSaveArea_method - sizeofStackSaveArea)(rFP), rINST # rINST<- method we are returning to
+    cmpl        $$0, rINST               # check for break frame
+    je          common_gotoBail         # bail if break frame
+    movl        offThread_curHandlerTable(%ecx),rIBASE
+    movl        offStackSaveArea_savedPc(%eax), rPC # rPC<- saveAreaOld->savedPc
+#if defined(WITH_JIT)
+    movl        offStackSaveArea_returnAddr(%eax), %ecx
+#endif
+    movl        rSELF, %eax
+    movl        rINST, offThread_method(%eax) # glue->method<- newSave->method
+    movl        offMethod_clazz(rINST), rINST # rINST<- method->clazz
+    movl        rFP, offThread_curFrame(%eax) # glue->self->curFrame<- rFP
+#if defined(WITH_JIT)
+    //update self->offThread_inJitCodeCache
+    movl        %ecx, offThread_inJitCodeCache(%eax)
+#endif
+    movl        offClassObject_pDvmDex(rINST), rINST # rINST<- method->clazz->pDvmDex
+    movl        rINST, offThread_methodClassDex(%eax) # glue->pDvmDex<- method->clazz->pDvmDex
+#if defined(WITH_JIT)
+    cmp         $$0, %ecx
+    je          .returnToBC
+    movl        %ecx, %eax
+    jmp         *%eax
+#endif
 
-    movl    offStackSaveArea_savedPc(%eax),rPC    # pc<- saveArea->savedPC
-    movl    offGlue_self(%ecx),%eax               # eax<- self
-    movl    rINST_FULL,offGlue_method(%ecx)  # glue->method = newSave->meethod
-    movl    rFP,offThread_curFrame(%eax)     # self->curFrame = fp
-    movl    offMethod_clazz(rINST_FULL),%eax # eax<- method->clazz
-    FETCH_INST_WORD(3)
-    movl    offClassObject_pDvmDex(%eax),%eax # eax<- method->clazz->pDvmDex
-    ADVANCE_PC(3)
-    movl    %eax,offGlue_methodClassDex(%ecx)
-    /* not bailing - restore entry mode to default */
-    movb    $$kInterpEntryInstr,offGlue_entryPoint(%ecx)
+.returnToBC:
+
+#if defined(WITH_JIT)
+    FETCH_INST_OPCODE  3, %ecx                 # %eax<- next instruction hi; fetch, advance
+    // %ecx has the opcode
+    addl         $$6, rPC               # 3*2 = 6
+    SPILL_TMP1   (%ecx)
+    movl         rSELF, %ecx
+    FETCH_INST
+    UNSPILL_TMP1   (%ecx)
+    movzbl      1(rPC), rINST
+    jmp     *(rIBASE,%ecx,4)
+#else
+    FETCH_INST_WORD 3
+    ADVANCE_PC 3
     GOTO_NEXT
+#endif
+
+19:
+    /*
+     * Handle special subMode actions
+     * On entry, rFP: prevFP, %ecx: self, %eax: saveArea
+     */
+    SPILL_TMP1(%ebx)
+    movl     offStackSaveArea_prevFrame(%eax), %ebx # %ebx<- saveArea->PrevFrame
+    movl     rPC, offThread_pc(%ecx)          # update interpSave.pc
+    movl     %ebx, offThread_curFrame(%ecx)    # update interpSave.curFrame
+    movl     %ecx, OUT_ARG0(%esp)             # parameter self
+    call     dvmReportReturn                  # (self)
+    UNSPILL_TMP1(%ebx)
+    movl     rSELF, %ecx                      # restore self
+    SAVEAREA_FROM_FP %eax                     # restore saveArea
+    jmp      14b
+
 
 /*
  * Prepare to strip the current frame and "longjump" back to caller of
  * dvmMterpStdRun.
  *
  * on entry:
- *    rINST_FULL holds changeInterp
- *    ecx holds glue pointer
+ *    rINST holds changeInterp
+ *    ecx holds self pointer
  *
- * expected profile: dvmMterpStdBail(MterpGlue *glue, bool changeInterp)
+ * expected profile: dvmMterpStdBail(Thread *self, bool changeInterp)
  */
 common_gotoBail:
-    SAVE_PC_TO_GLUE(%ecx)                # export state to glue
-    SAVE_FP_TO_GLUE(%ecx)
-    movl   %ecx,OUT_ARG0(%esp)           # glue in arg0
-    movl   rINST_FULL,OUT_ARG1(%esp)     # changeInterp in arg1
-    call    dvmMterpStdBail              # bail out....
-
+    movl   rPC,offThread_pc(%ecx)     # export state to self
+    movl   rFP,offThread_curFrame(%ecx)
+    movl   %ecx,OUT_ARG0(%esp)      # self in arg0
+    movl   rINST,OUT_ARG1(%esp)     # changeInterp in arg1
+    call   dvmMterpStdBail          # bail out....
 
 /*
- * After returning from a "glued" function, pull out the updated values
+ * The JIT's invoke method needs to remember the callsite class and
+ * target pair.  Save them here so that they are available to
+ * dvmCheckJit following the interpretation of this invoke.
+ *
+ * eax = Method* methodToCall
+ * ecx = "this"
+ * edx = rSELF
+ * ebx = free to use
+ */
+#if defined(WITH_JIT)
+save_callsiteinfo:
+    cmp     $$0, %ecx
+    je      2f
+    movl    offObject_clazz(%ecx), %ecx
+2:
+    movl    rSELF, %ebx
+    movl    %eax, offThread_methodToCall(%ebx)
+    movl    %ecx, offThread_callsiteClass(%ebx)
+    ret
+#endif
+
+#if defined(WITH_JIT)
+
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including the current
+     * instruction.
+     *
+     * On entry:
+     *     %ecx: &dvmDex->pResFields[field]
+     *     %eax:  field pointer (must preserve)
+     */
+common_verifyField:
+    movl    %ebx, TMP_SPILL1(%ebp)
+    movl     rSELF, %ebx
+    movzwl   offThread_subMode(%ebx), %ebx
+    andl     $$kSubModeJitTraceBuild, %ebx
+    movl    TMP_SPILL1(%ebp), %ebx
+    jne      1f
+    ret
+1:
+    movl    (%ecx), %ecx
+    cmp     $$0, %ecx
+    je      1f
+    ret
+1:
+    SPILL_TMP1(%eax)
+    SPILL_TMP2(%edx)
+    movl     rSELF, %ecx
+    # Because we call into this helper from a bytecode, we have
+    # to be careful not to write over the return address when using
+    # the OUT_ARG macros
+    lea      -8(%esp), %esp
+    movl     %ecx, OUT_ARG0(%esp)
+    movl     rPC, OUT_ARG1(%esp)
+    call     dvmJitEndTraceSelect
+    lea      8(%esp), %esp
+    UNSPILL_TMP2(%edx)
+    UNSPILL_TMP1(%eax)
+    ret
+#endif
+
+/*
+ * After returning from a "selfd" function, pull out the updated values
  * and start executing at the next instruction.
  */
- common_resumeAfterGlueCall:
-     GET_GLUE(%ecx)
-     LOAD_PC_FROM_GLUE(%ecx)
-     LOAD_FP_FROM_GLUE(%ecx)
-     FETCH_INST()
+common_resumeAfterGlueCall:
+     movl  rSELF, %eax
+     movl  offThread_pc(%eax),rPC
+     movl  offThread_curFrame(%eax),rFP
+     movl  offThread_curHandlerTable(%eax),rIBASE
+     FETCH_INST
      GOTO_NEXT
 
 /*
  * Integer divide or mod by zero
  */
 common_errDivideByZero:
-    EXPORT_PC()
-    movl    $$.LstrArithmeticException,%eax
-    movl    %eax,OUT_ARG0(%esp)
+    EXPORT_PC
     movl    $$.LstrDivideByZero,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
+    movl    %eax,OUT_ARG0(%esp)
+    call    dvmThrowArithmeticException
     jmp     common_exceptionThrown
 
 /*
  * Attempt to allocate an array with a negative size.
+ * On entry, len in eax
  */
 common_errNegativeArraySize:
-    EXPORT_PC()
-    movl    $$.LstrNegativeArraySizeException,%eax
-    movl    %eax,OUT_ARG0(%esp)
-    xorl    %eax,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
+    EXPORT_PC
+    movl    %eax,OUT_ARG0(%esp)                  # arg0<- len
+    call    dvmThrowNegativeArraySizeException   # (len)
     jmp     common_exceptionThrown
 
 /*
  * Attempt to allocate an array with a negative size.
+ * On entry, method name in eax
  */
 common_errNoSuchMethod:
-
-    EXPORT_PC()
-    movl    $$.LstrNoSuchMethodError,%eax
+    EXPORT_PC
     movl    %eax,OUT_ARG0(%esp)
-    xorl    %eax,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
+    call    dvmThrowNoSuchMethodError
     jmp     common_exceptionThrown
 
 /*
@@ -447,41 +845,24 @@ common_errNoSuchMethod:
  * NullPointerException and goto the exception processing code.
  */
 common_errNullObject:
-    EXPORT_PC()
-    movl    $$.LstrNullPointerException,%eax
-    movl    %eax,OUT_ARG0(%esp)
+    EXPORT_PC
     xorl    %eax,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
+    movl    %eax,OUT_ARG0(%esp)
+    call    dvmThrowNullPointerException
     jmp     common_exceptionThrown
 
 /*
  * Array index exceeds max.
+ * On entry:
+ *    eax <- array object
+ *    ecx <- index
  */
 common_errArrayIndex:
-    EXPORT_PC()
-    movl    $$.LstrArrayIndexException,%eax
+    EXPORT_PC
+    movl    offArrayObject_length(%eax), %eax
     movl    %eax,OUT_ARG0(%esp)
-    xorl    %eax,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
-    jmp     common_exceptionThrown
-/*
- * Invalid array value.
- */
-common_errArrayStore:
-    EXPORT_PC()
-    movl    $$.LstrArrayStoreException,%eax
-    movl    %eax,OUT_ARG0(%esp)
-    xorl    %eax,%eax
-    movl    %eax,OUT_ARG1(%esp)
-    SPILL(rPC)
-    call    dvmThrowException
-    UNSPILL(rPC)
+    movl    %ecx,OUT_ARG1(%esp)
+    call    dvmThrowArrayIndexOutOfBoundsException   # args (length, index)
     jmp     common_exceptionThrown
 
 /*
@@ -491,15 +872,136 @@ common_errArrayStore:
  * out of the interpreter), continue with whatever the next instruction
  * now happens to be.
  *
+ * NOTE: special subMode handling done in dvmMterp_exceptionThrown
+ *
  * This does not return.
  */
 common_exceptionThrown:
-    GET_GLUE(%ecx)
-    SAVE_PC_TO_GLUE(%ecx)
-    SAVE_FP_TO_GLUE(%ecx)
-    movl    %ecx,OUT_ARG0(%esp)
-    call    dvmMterp_exceptionThrown
-    jmp     common_resumeAfterGlueCall
+.LexceptionNew:
+
+    EXPORT_PC
+    movl       rSELF, %ecx
+    movl       %ecx, OUT_ARG0(%esp)
+    call       dvmCheckSuspendPending
+
+    movl       rSELF, %ecx
+    movl       offThread_exception(%ecx), %edx   # %edx <- self->exception
+    movl       %edx, OUT_ARG0(%esp)
+    movl       %ecx, OUT_ARG1(%esp)
+    SPILL_TMP1(%edx)
+    call       dvmAddTrackedAlloc      # don't let the exception be GCed
+    UNSPILL_TMP1(%edx)
+    movl       rSELF, %ecx
+    movl       offThread_subMode(%ecx), %eax    # get subMode flags
+    movl       $$0, offThread_exception(%ecx)
+
+    # Special subMode?
+    cmpl       $$0, %eax                # any special subMode handling needed?
+    je         8f                      # go if so
+
+    # Manage debugger bookkeeping
+    movl       rPC, offThread_pc(%ecx) # update interpSave.pc
+    movl       rFP, offThread_curFrame(%ecx) # update interpSave.curFrame
+    movl       %ecx, OUT_ARG0(%esp)
+    movl       %edx, OUT_ARG1(%esp)
+    SPILL_TMP1(%edx)
+    call       dvmReportExceptionThrow # (self, exception)
+    UNSPILL_TMP1(%edx)
+    movl       rSELF, %ecx
+
+8:
+    /*
+    * set up args and a local for &fp
+    */
+    lea        20(%esp), %esp          # raise %esp
+    movl       rFP, (%esp)               # save fp
+    movl       %esp, %eax              # %eax = &fp
+    lea        -20(%esp), %esp         # reset %esp
+    movl       %eax, OUT_ARG4(%esp)    # Arg 4 = &fp
+    movl       $$0, OUT_ARG3(%esp)      # Arg 3 = false
+    movl       %edx, OUT_ARG2(%esp)    # Arg 2 = exception
+    movl       %ecx, OUT_ARG0(%esp)    # Arg 0 = self
+
+    movl       offThread_method(%ecx), %eax # %eax = self->method
+    movl       offMethod_insns(%eax), %eax  # %eax = self->method->insn
+    movl       rPC, %ecx
+    subl       %eax, %ecx              # %ecx = pc - self->method->insn
+    sar        $$1, %ecx                # adjust %ecx for code offset
+    movl       %ecx, OUT_ARG1(%esp)    # Arg 1 = %ecx
+
+    /* call, %eax gets catchRelPc (a code-unit offset) */
+    SPILL_TMP1(%edx)                   # save exception
+    call       dvmFindCatchBlock       # call(self, relPc, exc, scan?, &fp)
+    UNSPILL_TMP1(%edx)                 # restore exception
+
+    /* fix earlier stack overflow if necessary; may trash rFP */
+    movl       rSELF, %ecx
+    cmpl       $$0, offThread_stackOverflowed(%ecx) # did we overflow?
+    je         1f                         # no, skip ahead
+    movl       %eax, rFP                  # save relPc result in rFP
+    movl       %ecx, OUT_ARG0(%esp)       # Arg 0 = self
+    movl       %edx, OUT_ARG1(%esp)       # Arg 1 = exception
+    SPILL_TMP1(%edx)
+    call       dvmCleanupStackOverflow    # call(self, exception)
+    UNSPILL_TMP1(%edx)
+    movl       rFP, %eax                  # restore result
+    movl       rSELF, %ecx
+1:
+
+    /* update frame pointer and check result from dvmFindCatchBlock */
+    movl       20(%esp), rFP              # retrieve the updated rFP
+    cmpl       $$0, %eax                  # is catchRelPc < 0?
+    jl         .LnotCaughtLocally
+
+    /* adjust locals to match self->interpSave.curFrame and updated PC */
+    SAVEAREA_FROM_FP rINST             # rINST<- new save area
+    movl       offStackSaveArea_method(rINST), rINST # rINST<- new method
+    movl       rINST, offThread_method(%ecx)         # self->method = new method
+    movl       offMethod_clazz(rINST), %ecx          # %ecx = method->clazz
+    movl       offMethod_insns(rINST), rINST         # rINST = method->insn
+    movl       offClassObject_pDvmDex(%ecx), %ecx    # %ecx = method->clazz->pDvmDex
+    lea        (rINST, %eax, 2), rPC      # rPC<- method->insns + catchRelPc
+    movl       rSELF, rINST
+    movl       %ecx, offThread_methodClassDex(rINST) # self->pDvmDex = method->clazz->pDvmDex
+
+    /* release the tracked alloc on the exception */
+    movl       %edx, OUT_ARG0(%esp)       # Arg 0 = exception
+    movl       rINST, OUT_ARG1(%esp)      # Arg 1 = self
+    SPILL_TMP1(%edx)
+    call       dvmReleaseTrackedAlloc     # release the exception
+    UNSPILL_TMP1(%edx)
+
+    /* restore the exception if the handler wants it */
+    movl       rSELF, %ecx
+    FETCH_INST
+    movzbl     rINSTbl, %eax
+    cmpl       $$OP_MOVE_EXCEPTION, %eax   # is it "move-exception"?
+    jne        1f
+    movl       %edx, offThread_exception(%ecx) # restore exception
+1:
+    movl       offThread_curHandlerTable(%ecx), rIBASE # refresh rIBASE
+    GOTO_NEXT
+
+.LnotCaughtLocally: # %edx = exception
+    /* fix stack overflow if necessary */
+    movl       rSELF, %ecx
+    movl       offThread_stackOverflowed(%ecx), %eax
+    cmpl       $$0, %eax                   # did we overflow earlier?
+    je         1f
+    movl       %ecx, OUT_ARG0(%esp)
+    movl       %edx, OUT_ARG1(%esp)
+    SPILL_TMP1(%edx)
+    call       dvmCleanupStackOverflow
+    UNSPILL_TMP1(%edx)
+
+1:
+    movl       rSELF, %ecx
+    movl       %edx, offThread_exception(%ecx) #restore exception
+    movl       %edx, OUT_ARG0(%esp)
+    movl       %ecx, OUT_ARG1(%esp)
+    call       dvmReleaseTrackedAlloc     # release the exception
+    movl       rSELF, %ecx
+    jmp        common_gotoBail            # bail out
 
 common_abort:
     movl    $$0xdeadf00d,%eax
@@ -511,25 +1013,7 @@ common_abort:
  */
 
     .section     .rodata
-.LstrNullPointerException:
-    .asciz    "Ljava/lang/NullPointerException;"
-.LstrArithmeticException:
-    .asciz  "Ljava/lang/ArithmeticException;"
 .LstrDivideByZero:
     .asciz  "divide by zero"
-.LstrArrayIndexException:
-    .asciz  "Ljava/lang/ArrayIndexOutOfBoundsException;"
-.LstrArrayStoreException:
-    .asciz  "Ljava/lang/ArrayStoreException;"
-.LstrNegativeArraySizeException:
-    .asciz  "Ljava/lang/NegativeArraySizeException;"
-.LstrInstantiationError:
-    .asciz  "Ljava/lang/InstantiationError;"
-.LstrClassCastException:
-    .asciz  "Ljava/lang/ClassCastException;"
-.LstrNoSuchMethodError:
-    .asciz  "Ljava/lang/NoSuchMethodError;"
-.LstrInternalError:
-    .asciz  "Ljava/lang/InternalError;"
-.LstrFilledNewArrayNotImpl:
+.LstrFilledNewArrayNotImplA:
     .asciz  "filled-new-array only implemented for 'int'"

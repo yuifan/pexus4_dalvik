@@ -23,6 +23,7 @@ import com.android.dx.rop.code.RegisterSpecList;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstLiteralBits;
 import com.android.dx.util.AnnotatedOutput;
+import java.util.BitSet;
 
 /**
  * Instruction format {@code 31i}. See the instruction format spec
@@ -84,8 +85,12 @@ public final class Form31i extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return Form51l.THE_ONE;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(1);
+
+        bits.set(0, unsignedFitsInByte(regs.get(0).getReg()));
+        return bits;
     }
 
     /** {@inheritDoc} */
@@ -95,9 +100,6 @@ public final class Form31i extends InsnFormat {
         int value =
             ((CstLiteralBits) ((CstInsn) insn).getConstant()).getIntBits();
 
-        write(out,
-              opcodeUnit(insn, regs.get(0).getReg()),
-              (short) value,
-              (short) (value >> 16));
+        write(out, opcodeUnit(insn, regs.get(0).getReg()), value);
     }
 }

@@ -6,10 +6,14 @@
      * The branch distance is a signed code-unit offset
      */
     /* goto/16 +AAAA */
-    movswl  2(rPC),rINST_FULL           # rINST_FULL<- ssssAAAA
-    testl   rINST_FULL,rINST_FULL       # test for <0
-    js      common_backwardBranch
-    movl    rINST_FULL,%eax
-    FETCH_INST_INDEXED(%eax)
-    ADVANCE_PC_INDEXED(%eax)
+    movl    rSELF,%ecx
+    movswl  2(rPC),%eax            # eax<- ssssAAAA
+    movl    offThread_curHandlerTable(%ecx),rIBASE
+    FETCH_INST_INDEXED %eax
+    ADVANCE_PC_INDEXED %eax
+#if defined(WITH_JIT)
+    GET_JIT_PROF_TABLE %ecx %eax
+    cmp         $$0, %eax
+    jne         common_updateProfile # set up %ebx & %edx & rPC
+#endif
     GOTO_NEXT

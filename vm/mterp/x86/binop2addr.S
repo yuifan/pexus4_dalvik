@@ -2,11 +2,7 @@
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an ARM instruction or a function call.  (If the result
-     * comes back in a register other than r0, you can override "result".)
-     *
-     * If "chkzero" is set to 1, we perform a divide-by-zero check on
-     * vCC (r1).  Useful for integer division and modulus.
+     * This could be an instruction or a function call.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -14,11 +10,11 @@
      *      sub-float/2addr, mul-float/2addr, div-float/2addr, rem-float/2addr
      */
     /* binop/2addr vA, vB */
-    movzx   rINST_HI,%ecx               # ecx<- A+
-    sarl    $$12,rINST_FULL             # rINST_FULL<- B
-    GET_VREG(%eax,rINST_FULL)           # eax<- vB
-    FETCH_INST_WORD(1)
-    andb    $$0xf,%cl                   # ecx<- A
-    $instr                              # for ex: addl   %eax,(rFP,%ecx,4)
-    ADVANCE_PC(1)
-    GOTO_NEXT
+    movzx   rINSTbl,%ecx               # ecx<- A+
+    sarl    $$4,rINST                  # rINST<- B
+    GET_VREG_R %eax rINST              # eax<- vB
+    andb    $$0xf,%cl                  # ecx<- A
+    $instr                             # for ex: addl   %eax,(rFP,%ecx,4)
+    FETCH_INST_OPCODE 1 %ecx
+    ADVANCE_PC 1
+    GOTO_NEXT_R %ecx

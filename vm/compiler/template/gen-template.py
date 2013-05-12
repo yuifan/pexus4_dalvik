@@ -146,7 +146,8 @@ def opEnd(tokens):
 
 #
 # Extract an ordered list of instructions from the VM sources.  We use the
-# "goto table" definition macro, which has exactly 256 entries.
+# "goto table" definition macro, which has exactly kNumPackedOpcodes
+# entries.
 #
 def getOpcodeList():
     opcodes = []
@@ -163,7 +164,7 @@ def getOpcodeList():
 
 
 #
-# Load and emit opcodes for all 256 instructions.
+# Load and emit opcodes for all kNumPackedOpcodes instructions.
 #
 def loadAndEmitOpcodes():
     sister_list = []
@@ -171,7 +172,7 @@ def loadAndEmitOpcodes():
     # point dvmAsmInstructionStart at the first handler or stub
     asm_fp.write("\n    .global dvmCompilerTemplateStart\n")
     asm_fp.write("    .type   dvmCompilerTemplateStart, %function\n")
-    asm_fp.write("    .text\n\n")
+    asm_fp.write("    .section .data.rel.ro\n\n")
     asm_fp.write("dvmCompilerTemplateStart:\n\n")
 
     for i in xrange(len(opcodes)):
@@ -211,7 +212,7 @@ def emitAsmHeader(outfp, dict):
     # with overflow here.
     outfp.write("    .balign 4\n")
     # Emit a label so that gdb will say the right thing.  We prepend an
-    # underscore so the symbol name doesn't clash with the OpCode enum.
+    # underscore so the symbol name doesn't clash with the Opcode enum.
     template_name = "dvmCompiler_%(opcode)s" % dict
     outfp.write("    .global %s\n" % template_name);
     outfp.write("%s:\n" % template_name);

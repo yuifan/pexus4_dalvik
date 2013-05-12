@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef _DALVIK_HEAP_SOURCE
-#define _DALVIK_HEAP_SOURCE
+#ifndef DALVIK_HEAP_SOURCE_H_
+#define DALVIK_HEAP_SOURCE_H_
 
 #include "alloc/Heap.h"
 #include "alloc/HeapInternal.h" // for GcHeap
@@ -22,17 +22,25 @@
 /* dlmalloc uses one size_t per allocated chunk.
  */
 #define HEAP_SOURCE_CHUNK_OVERHEAD         (1 * sizeof (size_t))
-#define HEAP_SOURCE_WORST_CHUNK_OVERHEAD   (32 * sizeof (size_t))
 
 /* The largest number of separate heaps we can handle.
  */
 #define HEAP_SOURCE_MAX_HEAP_COUNT 2
 
+enum HeapSourceValueSpec {
+    HS_FOOTPRINT,
+    HS_ALLOWED_FOOTPRINT,
+    HS_BYTES_ALLOCATED,
+    HS_OBJECTS_ALLOCATED
+};
+
 /*
  * Initializes the heap source; must be called before any other
  * dvmHeapSource*() functions.
  */
-GcHeap *dvmHeapSourceStartup(size_t startSize, size_t absoluteMaxSize);
+GcHeap *dvmHeapSourceStartup(size_t startingSize,
+                             size_t maximumSize,
+                             size_t growthLimit);
 
 /*
  * If the HeapSource was created while in zygote mode, this
@@ -62,11 +70,11 @@ void dvmHeapSourceThreadShutdown(void);
 void dvmHeapSourceShutdown(GcHeap **gcHeap);
 
 /*
- * Initializes a vector of object and mark bits to the object and mark
- * bits of each heap.
+ * Returns the base and inclusive max addresses of the heap source
+ * heaps.  The base and max values are suitable for passing directly
+ * to the bitmap sweeping routine.
  */
-void dvmHeapSourceGetObjectBitmaps(HeapBitmap liveBits[], HeapBitmap markBits[],
-                                   size_t numHeaps);
+void dvmHeapSourceGetRegions(uintptr_t *base, uintptr_t *max, size_t numHeaps);
 
 /*
  * Get the bitmap representing all live objects.
@@ -74,23 +82,26 @@ void dvmHeapSourceGetObjectBitmaps(HeapBitmap liveBits[], HeapBitmap markBits[],
 HeapBitmap *dvmHeapSourceGetLiveBits(void);
 
 /*
+ * Get the bitmap representing all marked objects.
+ */
+HeapBitmap *dvmHeapSourceGetMarkBits(void);
+
+/*
  * Gets the begining of the allocation for the HeapSource.
  */
 void *dvmHeapSourceGetBase(void);
 
 /*
+ * Returns a high water mark, between base and limit all objects must have been
+ * allocated.
+ */
+void *dvmHeapSourceGetLimit(void);
+
+/*
  * Returns the requested value. If the per-heap stats are requested, fill
  * them as well.
  */
-enum HeapSourceValueSpec {
-    HS_FOOTPRINT,
-    HS_ALLOWED_FOOTPRINT,
-    HS_BYTES_ALLOCATED,
-    HS_OBJECTS_ALLOCATED,
-    HS_EXTERNAL_BYTES_ALLOCATED,
-    HS_EXTERNAL_LIMIT
-};
-size_t dvmHeapSourceGetValue(enum HeapSourceValueSpec spec,
+size_t dvmHeapSourceGetValue(HeapSourceValueSpec spec,
                              size_t perHeapStats[], size_t arrayLen);
 
 /*
@@ -123,15 +134,6 @@ bool dvmHeapSourceContains(const void *ptr);
 bool dvmHeapSourceContainsAddress(const void *ptr);
 
 /*
- * Returns the value of the requested flag.
- */
-enum HeapSourcePtrFlag {
-    HS_CONTAINS,    // identical to dvmHeapSourceContains()
-    HS_ALLOCATED_IN_ZYGOTE
-};
-bool dvmHeapSourceGetPtrFlag(const void *ptr, enum HeapSourcePtrFlag flag);
-
-/*
  * Returns the number of usable bytes in an allocated chunk; the size
  * may be larger than the size passed to dvmHeapSourceAlloc().
  */
@@ -157,18 +159,11 @@ size_t dvmHeapSourceGetIdealFootprint(void);
 void dvmHeapSourceGrowForUtilization(void);
 
 /*
- * Return unused memory to the system if possible.  If <bytesTrimmed>
- * is non-NULL, the number of bytes returned to the system is written to it.
- */
-void dvmHeapSourceTrim(size_t bytesTrimmed[], size_t arrayLen);
-
-/*
  * Walks over the heap source and passes every allocated and
  * free chunk to the callback.
  */
-void dvmHeapSourceWalk(void(*callback)(const void *chunkptr, size_t chunklen,
-                                      const void *userptr, size_t userlen,
-                                      void *arg),
+void dvmHeapSourceWalk(void(*callback)(void* start, void* end,
+                                       size_t used_bytes, void* arg),
                        void *arg);
 /*
  * Gets the number of heaps available in the heap source.
@@ -197,6 +192,12 @@ void dvmMarkImmuneObjects(const char *immuneLimit);
  * heap.  Addresses at or above this pointer are threatened, addresses
  * below this pointer are immune.
  */
-void *dvmHeapSourceGetImmuneLimit(GcMode mode);
+void *dvmHeapSourceGetImmuneLimit(bool isPartial);
 
-#endif  // _DALVIK_HEAP_SOURCE
+/*
+ * Returns the maximum size of the heap.  This value will be either
+ * the value of -Xmx or a user supplied growth limit.
+ */
+size_t dvmHeapSourceGetMaximumSize(void);
+
+#endif  // DALVIK_HEAP_SOURCE_H_

@@ -20,7 +20,6 @@ import com.android.dx.rop.code.RopMethod;
 import com.android.dx.rop.code.TranslationAdvice;
 import com.android.dx.ssa.back.LivenessAnalyzer;
 import com.android.dx.ssa.back.SsaToRop;
-
 import java.util.EnumSet;
 
 /**
@@ -158,6 +157,8 @@ public class Optimizer {
 
         if (steps.contains(OptionalStep.SCCP)) {
             SCCP.process(ssaMeth);
+            DeadCodeRemover.process(ssaMeth);
+            needsDeadCodeRemover = false;
         }
 
         if (steps.contains(OptionalStep.LITERAL_UPGRADE)) {

@@ -18,11 +18,10 @@
 LOCAL_PATH:= $(call my-dir)
 
 dexdump_src_files := \
-		DexDump.c
+		DexDump.cpp
 
 dexdump_c_includes := \
-		dalvik \
-		$(JNI_H_INCLUDE)
+		dalvik
 
 dexdump_shared_libraries :=
 
@@ -47,6 +46,14 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_LDLIBS +=
 include $(BUILD_EXECUTABLE)
 
+include $(CLEAR_VARS)
+LOCAL_MODULE := libdexdump_static
+LOCAL_SRC_FILES := $(dexdump_src_files)
+LOCAL_C_INCLUDES := $(dexdump_c_includes)
+LOCAL_STATIC_LIBRARIES := $(dexdump_static_libraries)
+LOCAL_MODULE_TAGS := optional
+include $(BUILD_STATIC_LIBRARY)
+
 endif # !SDK_ONLY
 
 
@@ -55,7 +62,6 @@ endif # !SDK_ONLY
 ## Build the host command line tool dexdump
 ##
 ##
-ifneq ($(TARGET_SIMULATOR),true) # not 64 bit clean
 include $(CLEAR_VARS)
 LOCAL_MODULE := dexdump
 LOCAL_MODULE_TAGS := optional
@@ -71,4 +77,3 @@ LOCAL_LDLIBS += -lpthread -lz
 endif
 
 include $(BUILD_HOST_EXECUTABLE)
-endif # !TARGET_SIMULATOR

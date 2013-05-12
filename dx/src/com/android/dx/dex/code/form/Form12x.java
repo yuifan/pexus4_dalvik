@@ -17,12 +17,12 @@
 package com.android.dx.dex.code.form;
 
 import com.android.dx.dex.code.DalvInsn;
-import com.android.dx.dex.code.HighRegisterPrefix;
 import com.android.dx.dex.code.InsnFormat;
 import com.android.dx.dex.code.SimpleInsn;
 import com.android.dx.rop.code.RegisterSpec;
 import com.android.dx.rop.code.RegisterSpecList;
 import com.android.dx.util.AnnotatedOutput;
+import java.util.BitSet;
 
 /**
  * Instruction format {@code 12x}. See the instruction format spec
@@ -109,8 +109,37 @@ public final class Form12x extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return Form22x.THE_ONE;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(2);
+        int r0 = regs.get(0).getReg();
+        int r1 = regs.get(1).getReg();
+
+        switch (regs.size()) {
+          case 2: {
+            bits.set(0, unsignedFitsInNibble(r0));
+            bits.set(1, unsignedFitsInNibble(r1));
+            break;
+          }
+          case 3: {
+            if (r0 != r1) {
+                bits.set(0, false);
+                bits.set(1, false);
+            } else {
+                boolean dstRegComp = unsignedFitsInNibble(r1);
+                bits.set(0, dstRegComp);
+                bits.set(1, dstRegComp);
+            }
+
+            bits.set(2, unsignedFitsInNibble(regs.get(2).getReg()));
+            break;
+          }
+          default: {
+            throw new AssertionError();
+          }
+        }
+
+        return bits;
     }
 
     /** {@inheritDoc} */

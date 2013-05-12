@@ -24,6 +24,7 @@ import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstLiteral64;
 import com.android.dx.rop.cst.CstLiteralBits;
 import com.android.dx.util.AnnotatedOutput;
+import java.util.BitSet;
 
 /**
  * Instruction format {@code 51l}. See the instruction format spec
@@ -81,8 +82,12 @@ public final class Form51l extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return null;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(1);
+
+        bits.set(0, unsignedFitsInByte(regs.get(0).getReg()));
+        return bits;
     }
 
     /** {@inheritDoc} */
@@ -92,11 +97,6 @@ public final class Form51l extends InsnFormat {
         long value =
             ((CstLiteral64) ((CstInsn) insn).getConstant()).getLongBits();
 
-        write(out,
-              opcodeUnit(insn, regs.get(0).getReg()),
-              (short) value,
-              (short) (value >> 16),
-              (short) (value >> 32),
-              (short) (value >> 48));
+        write(out, opcodeUnit(insn, regs.get(0).getReg()), value);
     }
 }
